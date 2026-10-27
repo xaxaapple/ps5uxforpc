@@ -1,0 +1,76 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write          # нужен только для публикации релиза по тегу v*
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: windows/requirements-build.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r windows/requirements-build.txt
+
+      - name: Smoke test (sources)
+        run: python windows/tests/smoke_test.py
+
+      - name: Build (PyInstaller + Inno Setup)
+        run: ./windows/build.ps1
+
+      - name: Self-test of the built app
+        shell: pwsh
+        run: |
+          $exe = "windows\dist\PC5Launcher\PC5Launcher.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          $result = Get-Content "$env:APPDATA\PC5Launcher\selftest.txt" -ErrorAction SilentlyContinue
+          Write-Host "exit code: $($p.ExitCode); result: $result"
+          if ($p.ExitCode -ne 0 -or $result -ne "OK") {
+            Get-Content "$env:APPDATA\PC5Launcher\pc5launcher.log" -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: PC5Launcher-Setup
+          path: windows/dist/PC5Launcher-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v6
+        with:
+          name: PC5Launcher-portable
+          path: windows/dist/PC5Launcher-*-portable.zip
+          if-no-files-found: error
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            (Get-ChildItem windows\dist\PC5Launcher-Setup-*.exe).FullName `
+            (Get-ChildItem windows\dist\PC5Launcher-*-portable.zip).FullName `
+            --title "PC5 Launcher ${{ github.ref_name }} (Windows)" `
+            --notes "Windows 11 build. Installer (no admin rights needed) or portable zip."

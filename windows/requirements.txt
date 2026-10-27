@@ -1,0 +1,2 @@
+pywebview>=6.2,<7
+psutil>=6.0
